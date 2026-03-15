@@ -28,6 +28,14 @@ class PDFParser:
 
         return self.page_data
     
+    def normalize_bbox(self, bbox: List[float], page_info: Dict) -> List[float]:
+        return [
+            bbox[0] / page_info["width"],
+            bbox[1] / page_info["height"],
+            bbox[2] / page_info["width"],
+            bbox[3] / page_info["height"]
+        ]
+    
     def extract_page(self, page_num: int) -> Dict[str, Any]:
         page = self.doc[page_num]
 
@@ -59,18 +67,21 @@ class PDFParser:
         image_list = page.get_images(full = True)
         for img_idx, img in enumerate(image_list):
             xref = img[0]
-            base_img = self.doc.extract_image(xref)
-            
+            base_img = self.doc.extract_image(xref)            
             # Get image position
             img_rects = page.get_image_rects(xref)
             for rect in img_rects:
+                bbox = [rect.x0, rect.y0, rect.x1, rect.y1]
+                display_width = rect.x1 - rect.x0
+                display_height = rect.y1 - rect.y0
                 element = {
                     "type": "image",
-                    "bbox": [rect.x0, rect.y0, rect.x1, rect.y1],
+                    "bbox": bbox,
+                    "norm_bbnox": self.normalize_bbox(bbox,page_info), 
                     "image_data": base_img['image'],
                     "ext": base_img["ext"],
-                    "width": base_img["width"],
-                    "height": base_img["height"],
+                    "width": display_width,
+                    "height": display_height,
                     "xref": xref
                 }
                 page_info["elements"].append(element)

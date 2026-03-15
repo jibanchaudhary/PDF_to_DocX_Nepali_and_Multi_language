@@ -22,6 +22,11 @@ class PDFOCR:
             if element["type"] == "image":
                 img = Image.open(BytesIO(element["image_data"]))
                 ocr_text = self.ocr_engine.image_to_string(img, lang="nep+eng")
+                text = ocr_text.strip()
+                if len(text) < 5 :
+                    element["true_img"] = True
+                else:
+                    element["true_img"] = False
                 element["ocr_text"] = ocr_text
                 element["ocr_bbox"] = self.ocr_engine.image_to_boxes(img, lang="nep+eng")
                 element["ocr_confidence"] = self._get_confidence(img, lang="nep+eng")
@@ -29,5 +34,6 @@ class PDFOCR:
                     element["osd"] = None
                 else:
                     element["osd"] = self.ocr_engine.image_to_osd(img)
+                
         return elements
 

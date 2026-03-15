@@ -1,3 +1,7 @@
 .pvenv
 *.pyc
 __pycache__/
+
+*.Pdf
+*.png
+*.docx

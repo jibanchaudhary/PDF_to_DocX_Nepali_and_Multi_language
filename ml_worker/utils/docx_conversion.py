@@ -1,7 +1,9 @@
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt,Inches
 from typing import Dict, List
+from io import BytesIO
 import unicodedata
+
 
 # Filters nepali characters and positions too
 def clean_text(text: str) -> str:
@@ -28,7 +30,11 @@ def export_to_docx(pages: List[Dict], output_path = str):
                 if not cleaned.strip():
                     continue
             elif element["type"] == "image":
-                cleaned = element.get('ocr_text', '')
+                 cleaned = element.get('ocr_text', '')
+                 if element["true_img"]:
+                    image_stream = BytesIO(element["image_data"])
+                    doc.add_picture(image_stream, width=Inches(4))
+                    continue
             else:
                 continue
             run = para.add_run(cleaned)

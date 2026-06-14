@@ -1,71 +1,44 @@
-from ml_worker.pipeline.pdf_parser import PDFParser
-from ml_worker.utils.docx_conversion import export_to_docx
-from ml_worker.utils.docx_img_extracter import extract_docx_images
-from ml_worker.pipeline.ocr_processor import PDFOCR
-from ml_worker.utils.img_matcher import match_images
-from pdf2docx import Converter
-from docx.shared import Pt
-from docx.oxml.text.paragraph import CT_P
-from docx.text.paragraph import Paragraph
+"""
+Command-line entry point for PDFlow.
 
-def should_replace(img):
-    return (
-        img.get("ocr_confidence", 0) > 0 and
-        len(img.get("ocr_text", "").strip()) > 0
+Usage:
+    python -m scripts.run INPUT.pdf [OUTPUT.docx] [--mode auto|layout|flow]
+
+Run from the ``pdflow`` directory (the one containing ``ml_worker`` and
+``scripts``) so the package imports resolve.
+"""
+
+import argparse
+import sys
+import os
+
+# Allow running both as a module (-m scripts.run) and as a script.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from ml_worker.converter import PDFToWordConverter  # noqa: E402
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="pdflow",
+        description="Convert a (Nepali) PDF into an editable Word document.",
     )
+    parser.add_argument("input", help="Path to the input PDF")
+    parser.add_argument("output", nargs="?", default=None,
+                        help="Path to the output .docx (default: alongside input)")
+    parser.add_argument("--mode", choices=["auto", "layout", "flow"], default="auto",
+                        help="Conversion engine: auto-detect (default), force the "
+                             "OCR layout rebuild, or force pdf2docx reflow.")
+    parser.add_argument("--lang", default="ne", help="OCR language (default: ne)")
+    parser.add_argument("--zoom", type=float, default=4.0,
+                        help="Render scale for OCR (default: 4.0)")
+    args = parser.parse_args(argv)
 
-def replace_image_with_text(doc, shape, text):
-    """
-    Replaces an inline image shape in a docx with text.
+    converter = PDFToWordConverter(mode=args.mode, lang=args.lang, zoom=args.zoom)
+    out = converter.convert(args.input, args.output)
+    print(f"Done: {out}")
+    return 0
 
-    Args:
-        doc: docx.Document object
-        shape: InlineShape object to replace
-        text: Text to insert in place of the image
-    """
-    inline = shape._inline
-    drawing_elm = inline.getparent() # This contains the drawing part too, so getting the parent elm of drawing.
-    run_elm = drawing_elm.getparent()         
-    paragraph_elm = run_elm.getparent()        
-
-    if paragraph_elm is None or run_elm is None:
-        print("Cannot find run or paragraph to remove the image")
-        return
-
-    # Remove the run containing the image
-    paragraph_elm.remove(run_elm)
-    print("Removed image run")
-
-    # Add a new run with text in the same paragraph
-    paragraph = Paragraph(paragraph_elm, doc)
-    run = paragraph.add_run(text)
-    run.font.size = Pt(10)
-    print("Added text in place of image")
-
-
-def main():
-    pdf_path = "/home/jiban/Documents/jiban/PDFlow/pdflow/tests/License.Pdf"
-    docx_path = "/home/jiban/Documents/jiban/PDFlow/pdflow/tests/license.docx"
-    test = PDFParser(pdf_path)
-    pdf_pages = test.extract_all_pages()
-    ocr = PDFOCR()
-    ocr_results = ocr.process_elements(pdf_pages)
-    cv = Converter(pdf_path)
-    cv.convert(docx_path)
-    cv.close()
-
-    doc, docx_imgs = extract_docx_images(docx_path)
-    matches = match_images(ocr_results, docx_imgs)
-    for match in sorted(matches, key=lambda x: x["docx"]["index"], reverse=True):
-        pdf_img = match["pdf"]
-        shape_idx = match["docx"]["index"]
-        docx_shape = doc.inline_shapes[shape_idx]
-        if should_replace(pdf_img):
-            # print(pdf_img["ocr_text"])
-            replace_image_with_text(doc, docx_shape, pdf_img["ocr_text"])
-
-    doc.save(docx_path)
-    print("EEEEEEENNNNNDDDDD")
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

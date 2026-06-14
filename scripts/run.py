@@ -29,13 +29,16 @@ def main(argv=None) -> int:
     parser.add_argument("--mode", choices=["auto", "layout", "flow"], default="auto",
                         help="Conversion engine: auto-detect (default), force the "
                              "OCR layout rebuild, or force pdf2docx reflow.")
+    parser.add_argument("--pages", default=None,
+                        help="Pages to convert (1-based), e.g. '1-5', '2,4,6' or "
+                             "'3-' for page 3 to the end. Default: all pages.")
     parser.add_argument("--lang", default="ne", help="OCR language (default: ne)")
     parser.add_argument("--zoom", type=float, default=4.0,
                         help="Render scale for OCR (default: 4.0)")
     args = parser.parse_args(argv)
 
     converter = PDFToWordConverter(mode=args.mode, lang=args.lang, zoom=args.zoom)
-    out = converter.convert(args.input, args.output)
+    out = converter.convert(args.input, args.output, pages=args.pages)
     print(f"Done: {out}")
     return 0
 

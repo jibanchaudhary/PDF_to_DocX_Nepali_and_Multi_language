@@ -9,7 +9,7 @@ real, editable Devanagari from the rendered glyphs.
 """
 
 import fitz
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -53,9 +53,30 @@ class PDFParser:
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
-    def extract_all_pages(self) -> List[Dict[str, Any]]:
-        logger.info("Extracting %d page(s) from %s", len(self.doc), self.pdf_path)
-        self.page_data = [self.extract_page(i) for i in range(len(self.doc))]
+    def extract_all_pages(self, pages: Optional[List[int]] = None) -> List[Dict[str, Any]]:
+        """Extract pages into positioned elements.
+
+        Args:
+            pages: optional list of 0-based page indices to extract. When given,
+                only those pages are read (out-of-range indices are dropped and
+                duplicates removed while preserving order); the rest of the PDF
+                is never touched. ``None`` extracts every page. Each extracted
+                page keeps its original 1-based ``page_number`` / 0-based
+                ``page_index`` so previews and OCR map back to the real page.
+        """
+        total = len(self.doc)
+        if pages is None:
+            indices = list(range(total))
+        else:
+            seen = set()
+            indices = []
+            for i in pages:
+                if 0 <= i < total and i not in seen:
+                    seen.add(i)
+                    indices.append(i)
+        logger.info("Extracting %d of %d page(s) from %s",
+                    len(indices), total, self.pdf_path)
+        self.page_data = [self.extract_page(i) for i in indices]
         return self.page_data
 
     def extract_page(self, page_num: int) -> Dict[str, Any]:

@@ -177,10 +177,16 @@ class NepaliOCR:
                 page_image = self.render_page(page)
                 for el in broken:
                     crop = self.crop_region(page_image, el["bbox"])
-                    recognised = self.read_image(crop)
+                    lines = self._lines_from_result(self._predict(crop))
+                    recognised = " ".join(it["text"] for it in lines)
                     if recognised:
                         el["text"] = recognised
                         el["ocr"] = True
+                        el["ocr_source"] = "legacy-font"
+                        el["ocr_score"] = (
+                            sum(l["score"] for l in lines) / len(lines)
+                            if lines else None
+                        )
                         el["font"] = self.devanagari_font  # Devanagari-capable
                     else:
                         # Could not recover this glyph run -- drop the
@@ -219,7 +225,7 @@ class NepaliOCR:
             if kind == "graphic":
                 continue
             h, w = arr.shape[:2]
-            rows = self._lines_to_row_elements(lines, w, h, el["bbox"])
+            rows = self._lines_to_row_elements(lines, w, h, el["bbox"], source="image")
             if not rows:
                 continue
             if kind == "text":
@@ -302,7 +308,8 @@ class NepaliOCR:
     def _lines_to_row_elements(self, lines: List[Dict[str, Any]],
                                src_w: int, src_h: int,
                                dst_rect: List[float],
-                               color: str = "#000000") -> List[Dict[str, Any]]:
+                               color: str = "#000000",
+                               source: str = "scan") -> List[Dict[str, Any]]:
         """Cluster OCR segments into visual rows and map them from source pixel
         coordinates onto ``dst_rect`` (a PDF-coordinate rectangle), returning one
         positioned, editable text element per row. Used for both text-bearing
@@ -331,6 +338,8 @@ class NepaliOCR:
                 "bold": False,
                 "italic": False,
                 "ocr": True,
+                "ocr_source": source,
+                "ocr_score": r.get("score"),
                 "needs_ocr": False,
             })
         return elements
@@ -364,8 +373,10 @@ class NepaliOCR:
     def _merge_row(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         segments.sort(key=lambda s: s["bbox"][0])
         text = " ".join(s["text"] for s in segments)
+        scores = [s["score"] for s in segments if s.get("score") is not None]
         return {
             "text": text,
+            "score": (sum(scores) / len(scores)) if scores else None,
             "bbox": [
                 min(s["bbox"][0] for s in segments),
                 min(s["bbox"][1] for s in segments),

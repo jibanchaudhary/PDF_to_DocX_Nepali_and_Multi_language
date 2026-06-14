@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union, Iterable
 
 from ml_worker.pipeline.pdf_parser import PDFParser
 from ml_worker.pipeline.paddle_ocr_processor import NepaliOCR
@@ -25,6 +25,52 @@ from ml_worker.utils.docx_conversion import DocxLayoutBuilder
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# A page selection may be given as ``None`` (all pages), a human spec string
+# (1-based, e.g. ``"1-5"``, ``"2,4,6"``, ``"3-"``) or an iterable of 0-based
+# page indices.
+PageSelection = Union[None, str, Iterable[int]]
+
+
+def parse_page_spec(spec: Optional[str], total: int) -> Optional[List[int]]:
+    """Turn a 1-based page-range string into sorted, unique 0-based indices.
+
+    Supports comma-separated parts, each either a single page (``"3"``) or a
+    range (``"1-5"``, ``"3-"`` for "3 to end", ``"-4"`` for "start to 4").
+    Returns ``None`` for an empty/blank spec (meaning "all pages"). Pages
+    outside ``1..total`` are clamped away; an all-out-of-range spec yields ``[]``.
+
+    Raises:
+        ValueError: if the spec contains a non-numeric token.
+    """
+    if spec is None:
+        return None
+    spec = spec.strip()
+    if not spec:
+        return None
+
+    indices: set[int] = set()
+    for raw in spec.split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                a, _, b = part.partition("-")
+                start = int(a) if a.strip() else 1
+                end = int(b) if b.strip() else total
+                if start > end:
+                    start, end = end, start
+                for p in range(start, end + 1):
+                    if 1 <= p <= total:
+                        indices.add(p - 1)
+            else:
+                p = int(part)
+                if 1 <= p <= total:
+                    indices.add(p - 1)
+        except ValueError as exc:
+            raise ValueError(f"Invalid page selection: {raw!r}") from exc
+    return sorted(indices)
 
 
 class PDFToWordConverter:
@@ -47,7 +93,16 @@ class PDFToWordConverter:
         self.min_confidence = min_confidence
         self.zoom = zoom
 
-    def convert(self, pdf_path: str, output_path: Optional[str] = None) -> str:
+    def convert(self, pdf_path: str, output_path: Optional[str] = None,
+                pages: PageSelection = None) -> str:
+        """Convert ``pdf_path`` to ``output_path``.
+
+        Args:
+            pages: optional page selection — ``None`` (all pages), a 1-based
+                spec string (``"1-5"``, ``"2,4,6"``, ``"3-"``) or an iterable of
+                0-based indices. Only the selected pages are parsed, OCR'd and
+                written, so processing a slice of a large PDF is much faster.
+        """
         if not os.path.isfile(pdf_path):
             raise FileNotFoundError(pdf_path)
         if output_path is None:
@@ -55,18 +110,35 @@ class PDFToWordConverter:
 
         parser = PDFParser(pdf_path)
         try:
-            pages = parser.extract_all_pages()
-            engine = self._choose_engine(pages)
-            logger.info("Converting %s using '%s' engine -> %s",
-                        pdf_path, engine, output_path)
+            indices = self._resolve_pages(pages, len(parser.doc))
+            page_data = parser.extract_all_pages(pages=indices)
+            engine = self._choose_engine(page_data)
+            logger.info("Converting %s using '%s' engine (%s page(s)) -> %s",
+                        pdf_path, engine, len(page_data), output_path)
             if engine == "flow":
-                self._convert_flow(pdf_path, output_path)
+                self._convert_flow(pdf_path, output_path, pages=indices)
             else:
-                self._convert_layout(parser, pages, output_path)
+                self._convert_layout(parser, page_data, output_path)
         finally:
             parser.close()
 
         return output_path
+
+    @staticmethod
+    def _resolve_pages(pages: PageSelection, total: int) -> Optional[List[int]]:
+        """Normalise any accepted page selection to 0-based indices (or None)."""
+        if pages is None:
+            return None
+        if isinstance(pages, str):
+            return parse_page_spec(pages, total)
+        seen = set()
+        out: List[int] = []
+        for i in pages:
+            i = int(i)
+            if 0 <= i < total and i not in seen:
+                seen.add(i)
+                out.append(i)
+        return out
 
     def _choose_engine(self, pages: List[Dict[str, Any]]) -> str:
         if self.mode != "auto":
@@ -91,16 +163,21 @@ class PDFToWordConverter:
         builder.save(output_path)
 
     @staticmethod
-    def _convert_flow(pdf_path: str, output_path: str) -> None:
+    def _convert_flow(pdf_path: str, output_path: str,
+                      pages: Optional[List[int]] = None) -> None:
         from pdf2docx import Converter
         cv = Converter(pdf_path)
         try:
-            cv.convert(output_path)
+            # pdf2docx accepts a list of 0-based page indices via ``pages``.
+            if pages is not None:
+                cv.convert(output_path, pages=pages)
+            else:
+                cv.convert(output_path)
         finally:
             cv.close()
 
 
 def convert_pdf_to_word(pdf_path: str, output_path: Optional[str] = None,
-                        mode: str = "auto") -> str:
+                        mode: str = "auto", pages: PageSelection = None) -> str:
     """Convenience one-shot wrapper."""
-    return PDFToWordConverter(mode=mode).convert(pdf_path, output_path)
+    return PDFToWordConverter(mode=mode).convert(pdf_path, output_path, pages=pages)

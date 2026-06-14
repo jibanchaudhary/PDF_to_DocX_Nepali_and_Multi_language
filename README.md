@@ -119,6 +119,11 @@ python -m scripts.run input.pdf output.docx
 # Force a specific engine
 python -m scripts.run input.pdf output.docx --mode layout   # OCR rebuild
 python -m scripts.run input.pdf output.docx --mode flow     # pdf2docx reflow
+
+# Convert only some pages (1-based) — the rest of the PDF is never parsed
+python -m scripts.run input.pdf output.docx --pages 1-5     # first five pages
+python -m scripts.run input.pdf output.docx --pages 2,4,6   # specific pages
+python -m scripts.run input.pdf output.docx --pages 3-      # page 3 to the end
 ```
 
 Or from Python:
@@ -127,11 +132,15 @@ Or from Python:
 from ml_worker.converter import PDFToWordConverter
 
 PDFToWordConverter(mode="auto").convert("input.pdf", "output.docx")
+# only pages 1–5 (accepts a "1-5" spec or a list of 0-based indices)
+PDFToWordConverter().convert("input.pdf", "output.docx", pages="1-5")
 ```
 
 ### Options
 
 - `--mode {auto,layout,flow}` — engine selection (default `auto`).
+- `--pages` — pages to convert, 1-based, e.g. `1-5`, `2,4,6`, `3-` (default: all).
+  Only the selected pages are parsed, OCR'd and built.
 - `--lang` — OCR language code (default `ne` for Nepali/Devanagari).
 - `--zoom` — render scale used for OCR; higher is sharper but slower (default `4.0`).
 
@@ -148,4 +157,55 @@ ml_worker/
     docx_conversion.py             layout-preserving DOCX builder (text boxes/images)
 scripts/
   run.py                           command-line entry point
+backend/                           FastAPI web API (upload → convert → download)
+  app.py                           routes: convert, SSE progress, previews, download
+  service.py                       instrumented pipeline (progress + rich analysis)
+  jobs.py                          in-memory job registry + event stream
+frontend/                          premium React/Vite web UI (see frontend/README.md)
 ```
+
+## Web app
+
+A premium, Apple-inspired website wraps the same pipeline: drag-and-drop a PDF,
+watch live progress (parse → route → OCR → build), then **download the editable
+`.docx`** and explore the result — a draggable PDF-vs-Word comparison, an
+in-browser Word preview, the OCR-recovered Unicode Devanagari with confidence
+scores, a layout/structure reconstruction, and the engine reasoning. A live
+badge in the header shows whether OCR inference is running on **GPU** (CUDA) or
+has fallen back to **CPU**.
+
+The frontend is a React/TypeScript SPA (Vite, Tailwind, Framer Motion); the
+backend is FastAPI, reusing `ml_worker` for the conversion and streaming
+progress over Server-Sent Events.
+
+### Run it
+
+```bash
+# one-time: install the web layer into the same venv
+pip install -r backend/requirements.txt          # fastapi, uvicorn, multipart
+# and build the UI (needs Node 18+)
+cd frontend && npm install && npm run build && cd ..
+
+# serve the whole app (SPA at /, API under /api)
+python web_run.py                                  # http://127.0.0.1:8000
+```
+
+`web_run.py` auto-builds the frontend on first run; pass `--port`, `--reload`,
+or `--no-build` as needed. Use the venv interpreter, e.g.
+`../.pvenv/bin/python web_run.py`.
+
+For frontend development with hot reload, run `npm run dev` (port 5173, proxies
+`/api`) alongside `uvicorn backend.app:app --reload`. See
+[`frontend/README.md`](frontend/README.md) for details.
+
+### API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/convert` | upload a PDF (`file`, `mode`, optional `pages` e.g. `1-5`), starts a job |
+| `GET`  | `/api/jobs/{id}/events` | Server-Sent Events progress stream |
+| `GET`  | `/api/jobs/{id}` | job status + analysis (poll/fallback) |
+| `GET`  | `/api/jobs/{id}/result` | download the generated `.docx` |
+| `GET`  | `/api/jobs/{id}/docx` | the `.docx` inline (in-browser preview) |
+| `GET`  | `/api/jobs/{id}/pages/page-N.png` | rendered original page (before view) |
+| `GET`  | `/api/device` | inference device — `gpu` (CUDA) or `cpu` fallback |

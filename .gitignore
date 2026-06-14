@@ -1,4 +1,4 @@
-.pvenv
+.pvenv/
 *.pyc
 __pycache__/
 

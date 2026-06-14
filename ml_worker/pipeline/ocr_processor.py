@@ -1,39 +1,61 @@
-import pytesseract
-from typing import List, Dict, Any
+"""
+Tesseract-based OCR fallback.
+
+This is a lightweight alternative to :class:`NepaliOCR` (PaddleOCR) for
+environments where Paddle is unavailable. It requires the system ``tesseract``
+binary with the ``nep`` and ``eng`` language data installed. PaddleOCR is the
+default engine because it is markedly more accurate on Devanagari; this module
+is kept only as a drop-in fallback.
+"""
+
+from __future__ import annotations
+
+import logging
 from io import BytesIO
+from typing import List, Dict, Any
+
 from PIL import Image
 
+logger = logging.getLogger(__name__)
 
-class PDFOCR:
-    def __init__(self, ocr_engine = pytesseract):
-        self.ocr_engine = ocr_engine
 
-    def _get_confidence(self, img: Image.Image, lang: str) -> float:
-        """Get OCR confidence score"""
+class TesseractOCR:
+    def __init__(self, lang: str = "nep+eng"):
+        import pytesseract  # imported lazily so Paddle-only installs still work
+        self.pytesseract = pytesseract
+        self.lang = lang
+
+    def _confidence(self, img: Image.Image) -> float:
         try:
-            data = self.ocr_engine.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
-            confidences = [int(conf) for conf in data['conf'] if conf != '-1']
-            return sum(confidences) / len(confidences) if confidences else 0.0
-        except:
+            data = self.pytesseract.image_to_data(
+                img, lang=self.lang, output_type=self.pytesseract.Output.DICT
+            )
+            confs = [int(c) for c in data["conf"] if c not in ("-1", -1)]
+            return sum(confs) / len(confs) if confs else 0.0
+        except Exception as exc:
+            logger.debug("Tesseract confidence failed: %s", exc)
             return 0.0
-        
-    def process_elements(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        for i, element in enumerate(elements[0]["elements"]):
-            if element["type"] == "image":
-                img = Image.open(BytesIO(element["image_data"]))
-                ocr_text = self.ocr_engine.image_to_string(img, lang="nep+eng")
-                text = ocr_text.strip()
-                if len(text) < 5 :
-                    element["true_img"] = True
-                else:
-                    element["true_img"] = False
-                element["ocr_text"] = ocr_text
-                element["ocr_bbox"] = self.ocr_engine.image_to_boxes(img, lang="nep+eng")
-                element["ocr_confidence"] = self._get_confidence(img, lang="nep+eng")
-                if element["ocr_confidence"] < 50:
-                    element["osd"] = None
-                else:
-                    element["osd"] = self.ocr_engine.image_to_osd(img)
-                
-        return elements
 
+    def read_image(self, img: Image.Image) -> str:
+        return self.pytesseract.image_to_string(img, lang=self.lang).strip()
+
+    def process_pages(self, pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Run OCR over every embedded image on every page (in place)."""
+        for page in pages:
+            for element in page.get("elements", []):
+                if element.get("type") != "image":
+                    continue
+                try:
+                    img = Image.open(BytesIO(element["image_data"]))
+                except Exception as exc:
+                    logger.warning("Cannot open image for OCR: %s", exc)
+                    continue
+                text = self.read_image(img)
+                element["ocr_text"] = text
+                element["ocr_confidence"] = self._confidence(img)
+                element["true_img"] = len(text) < 5
+        return pages
+
+
+# Backwards-compatible alias.
+PDFOCR = TesseractOCR

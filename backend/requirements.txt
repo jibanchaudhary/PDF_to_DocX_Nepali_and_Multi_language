@@ -1,0 +1,9 @@
+# Web layer for PDFlow — install on top of the project's main requirements.txt
+# (PyMuPDF, pdf2docx, paddleocr, …) into the same virtual environment.
+#
+#   pip install -r requirements.txt
+#   pip install -r backend/requirements.txt
+#
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9

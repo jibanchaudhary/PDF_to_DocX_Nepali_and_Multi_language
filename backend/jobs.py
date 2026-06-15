@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import os
 import time
-import uuid
+import shutil
+import secrets
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -143,7 +144,9 @@ class JobRegistry:
         os.makedirs(STORAGE_ROOT, exist_ok=True)
 
     def create(self, filename: str, mode: str = "auto") -> Job:
-        job_id = uuid.uuid4().hex[:12]
+        # A high-entropy id: the job URL itself is the read capability, so it
+        # must not be guessable. ~192 bits, URL-safe (valid as a path segment).
+        job_id = secrets.token_urlsafe(24)
         job = Job(id=job_id, filename=filename, mode=mode)
         os.makedirs(job.pages_dir, exist_ok=True)
         os.makedirs(job.img_dir, exist_ok=True)
@@ -154,6 +157,29 @@ class JobRegistry:
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def remove(self, job_id: str) -> None:
+        """Drop a job from the registry and delete its working directory."""
+        with self._lock:
+            self._jobs.pop(job_id, None)
+        shutil.rmtree(os.path.join(STORAGE_ROOT, job_id), ignore_errors=True)
+
+    def reap(self, ttl: float) -> int:
+        """Evict jobs (and their files) older than ``ttl`` seconds.
+
+        Bounds both the in-memory registry and on-disk ``storage/jobs`` so an
+        unauthenticated stream of uploads cannot grow them without limit.
+        """
+        if ttl <= 0:
+            return 0
+        cutoff = time.time() - ttl
+        with self._lock:
+            stale = [jid for jid, j in self._jobs.items() if j.created_at < cutoff]
+            for jid in stale:
+                self._jobs.pop(jid, None)
+        for jid in stale:
+            shutil.rmtree(os.path.join(STORAGE_ROOT, jid), ignore_errors=True)
+        return len(stale)
 
 
 registry = JobRegistry()

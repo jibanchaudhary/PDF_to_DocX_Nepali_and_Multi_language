@@ -19,31 +19,41 @@ from __future__ import annotations
 
 import os
 import json
-import shutil
+import time
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
+from contextlib import asynccontextmanager
 from .jobs import registry, Job
 from .service import run_conversion
 from .device import get_device_info, warm as warm_device
+from .security import (auth_identity, rate_limiter, ALLOW_ORIGINS,
+                       MAX_UPLOAD_BYTES, JOB_TTL_SEC)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pdflow.app")
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Detect the inference device off the request path so /api/device is instant.
+    threading.Thread(target=warm_device, name="pdflow-device", daemon=True).start()
+    if JOB_TTL_SEC:
+        threading.Thread(target=_reaper_loop, name="pdflow-reaper",
+                         daemon=True).start()
+    yield
 
-app = FastAPI(title="PDFlow API", version="1.0.0")
+
+app = FastAPI(title="PDFlow API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=ALLOW_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -51,10 +61,16 @@ app.add_middleware(
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pdflow-conv")
 
 
-@app.on_event("startup")
-def _startup() -> None:
-    # Detect the inference device off the request path so /api/device is instant.
-    threading.Thread(target=warm_device, name="pdflow-device", daemon=True).start()
+def _reaper_loop() -> None:
+    interval = max(60, min(JOB_TTL_SEC, 300))
+    while True:
+        time.sleep(interval)
+        try:
+            n = registry.reap(JOB_TTL_SEC)
+            if n:
+                logger.info("Reaped %d expired job(s)", n)
+        except Exception:  # noqa: BLE001 - never let the reaper die
+            logger.exception("job reaper error")
 
 
 @app.get("/api/health")
@@ -70,7 +86,8 @@ def device():
 
 @app.post("/api/convert")
 async def convert(file: UploadFile = File(...), mode: str = Form("auto"),
-                  pages: str = Form("")):
+                  pages: str = Form(""),
+                  identity: str = Depends(auth_identity)):
     if mode not in ("auto", "layout", "flow"):
         raise HTTPException(400, "mode must be auto, layout or flow")
     name = file.filename or "document.pdf"
@@ -79,22 +96,38 @@ async def convert(file: UploadFile = File(...), mode: str = Form("auto"),
 
     pages_spec = (pages or "").strip() or None
     job = registry.create(filename=name, mode=mode)
-    size = 0
-    with open(job.input_path, "wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                out.close()
-                shutil.rmtree(job.dir, ignore_errors=True)
-                raise HTTPException(413, "File exceeds the 50 MB limit")
-            out.write(chunk)
-    await file.close()
+    try:
+        size = 0
+        head = b""
+        with open(job.input_path, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                if len(head) < 1024:
+                    head += chunk[:1024 - len(head)]
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "File exceeds the upload size limit")
+                out.write(chunk)
+        await file.close()
 
-    if size == 0:
-        shutil.rmtree(job.dir, ignore_errors=True)
-        raise HTTPException(400, "Uploaded file is empty")
+        if size == 0:
+            raise HTTPException(400, "Uploaded file is empty")
+        # Don't trust the extension: feed only real PDFs to the native parsers.
+        if b"%PDF-" not in head:
+            raise HTTPException(400, "This file is not a valid PDF.")
 
-    _executor.submit(run_conversion, job, mode, pages_spec)
+        # Hold a concurrency slot for the job's lifetime; the worker releases it.
+        rate_limiter.acquire_slot(identity)
+    except HTTPException:
+        registry.remove(job.id)
+        raise
+
+    def _run_and_release() -> None:
+        try:
+            run_conversion(job, mode, pages_spec)
+        finally:
+            rate_limiter.release_slot(identity)
+
+    _executor.submit(_run_and_release)
     logger.info("Queued job %s (%s, %.1f KB, mode=%s, pages=%s)", job.id, name,
                 size / 1024, mode, pages_spec or "all")
     return JSONResponse(job.to_dict(), status_code=202)

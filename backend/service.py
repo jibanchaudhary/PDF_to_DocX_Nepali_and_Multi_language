@@ -22,6 +22,7 @@ from ml_worker.converter import parse_page_spec
 
 from .jobs import Job
 from .device import get_device_info
+from .security import MAX_PAGES, MAX_OCR_MP, MAX_PREVIEW_MP, JOB_TIMEOUT_SEC
 
 logger = logging.getLogger("pdflow.service")
 
@@ -41,6 +42,7 @@ def run_conversion(job: Job, mode: str = "auto", pages_spec: Optional[str] = Non
     :meth:`Job.fail` so the SSE stream always terminates cleanly.
     """
     started = time.time()
+    deadline = (started + JOB_TIMEOUT_SEC) if JOB_TIMEOUT_SEC else None
     parser: Optional[PDFParser] = None
     try:
         job.emit("uploaded", "File received", 0.04)
@@ -58,11 +60,29 @@ def run_conversion(job: Job, mode: str = "auto", pages_spec: Optional[str] = Non
                      f"this PDF has {total_pages} page(s).")
             return
 
+        # Bound the work before any heavy parsing/rasterisation: a small PDF can
+        # declare thousands of pages, and rendering each one drives GPU/RAM cost.
+        n_selected = len(indices) if indices is not None else total_pages
+        if MAX_PAGES and n_selected > MAX_PAGES:
+            job.fail(f"This request would process {n_selected} pages, over the "
+                     f"{MAX_PAGES}-page limit. Use the page selection to narrow it.")
+            return
+
         sel_msg = (f"selected {len(indices)} of {total_pages}"
                    if indices is not None else f"all {total_pages}")
         job.emit("parsing",
                  f"Reading PDF structure with PyMuPDF ({sel_msg} page(s))", 0.12)
         pages = parser.extract_all_pages(pages=indices)
+
+        # Guard the OCR rasteriser against a giant-page memory bomb: a single
+        # huge page rendered at the OCR zoom would allocate gigabytes.
+        if MAX_OCR_MP:
+            cap_px = MAX_OCR_MP * 1_000_000
+            for p in pages:
+                if (p["width"] * zoom) * (p["height"] * zoom) > cap_px:
+                    job.fail(f"Page {p['page_number']} is too large to rasterise "
+                             f"safely. Crop or split it and try again.")
+                    return
 
         # Render only the selected original pages so the comparison view can show
         # the "before" immediately while heavier OCR work continues.
@@ -76,6 +96,10 @@ def run_conversion(job: Job, mode: str = "auto", pages_spec: Optional[str] = Non
         job.emit("routing", f"Routed to the “{engine}” engine", 0.30,
                  extra={"engine": engine, "engine_reason": reason})
 
+        if _past_deadline(deadline):
+            job.fail("Conversion exceeded the time limit and was stopped.")
+            return
+
         if engine == "flow":
             job.emit("building",
                      "Reflowing to Word via pdf2docx (clean digital PDF)", 0.55)
@@ -85,6 +109,9 @@ def run_conversion(job: Job, mode: str = "auto", pages_spec: Optional[str] = Non
             ocr = NepaliOCR(lang=lang, min_confidence=0.5, zoom=zoom)
             total = len(pages) or 1
             for i, page_info in enumerate(pages):
+                if _past_deadline(deadline):
+                    job.fail("Conversion exceeded the time limit and was stopped.")
+                    return
                 frac = 0.32 + 0.50 * (i / total)
                 job.emit("ocr",
                          f"OCR recovering Devanagari — page {i + 1}/{total}",
@@ -107,17 +134,26 @@ def run_conversion(job: Job, mode: str = "auto", pages_spec: Optional[str] = Non
         job.finish(analysis)
         logger.info("Job %s done in %.1fs (engine=%s)", job.id,
                     time.time() - started, engine)
-    except Exception as exc:  # noqa: BLE001 - surface any failure to the client
+    except Exception:  # noqa: BLE001 - log details server-side, stay generic to the client
         logger.exception("Job %s failed", job.id)
-        job.fail(str(exc) or exc.__class__.__name__)
+        job.fail("Conversion failed while processing this PDF. "
+                 "Please verify the file and try again.")
     finally:
         if parser is not None:
             parser.close()
+        # The original upload is never served back; drop it once we're done so a
+        # sensitive document isn't retained any longer than the derived output.
+        if job.status == "done":
+            try:
+                os.remove(job.input_path)
+            except OSError:
+                pass
 
 
-# --------------------------------------------------------------------------- #
-# Engine routing (mirrors ml_worker.converter, with human-readable reasons)
-# --------------------------------------------------------------------------- #
+def _past_deadline(deadline: Optional[float]) -> bool:
+    return deadline is not None and time.time() > deadline
+
+
 def _choose_engine(pages: List[Dict[str, Any]], mode: str) -> str:
     if mode != "auto":
         return mode
@@ -170,9 +206,6 @@ def _convert_flow(pdf_path: str, output_path: str,
         cv.close()
 
 
-# --------------------------------------------------------------------------- #
-# Preview rendering
-# --------------------------------------------------------------------------- #
 def _render_pdf_previews(doc: "fitz.Document", job: Job,
                          pages: List[Dict[str, Any]]) -> None:
     """Rasterise each *selected* original page to a PNG for the 'before' view.
@@ -180,12 +213,18 @@ def _render_pdf_previews(doc: "fitz.Document", job: Job,
     Named by the real 1-based page number so previews line up with the analysis
     even when only a subset of the document was parsed.
     """
-    mat = fitz.Matrix(PREVIEW_ZOOM, PREVIEW_ZOOM)
+    cap_px = MAX_PREVIEW_MP * 1_000_000 if MAX_PREVIEW_MP else 0
     for page_info in pages:
         idx = page_info["page_index"]
         num = page_info["page_number"]
         try:
-            pix = doc[idx].get_pixmap(matrix=mat, alpha=False)
+            page = doc[idx]
+            zoom = PREVIEW_ZOOM
+            if cap_px:
+                px = (page.rect.width * zoom) * (page.rect.height * zoom)
+                if px > cap_px:  # downscale huge pages instead of OOM-ing
+                    zoom *= (cap_px / px) ** 0.5
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             pix.save(os.path.join(job.pages_dir, f"page-{num}.png"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("preview render failed page %d: %s", num, exc)
@@ -214,9 +253,6 @@ def _export_layout_images(pages: List[Dict[str, Any]], job: Job) -> None:
                 logger.warning("image export failed %s: %s", fname, exc)
 
 
-# --------------------------------------------------------------------------- #
-# Analysis payload
-# --------------------------------------------------------------------------- #
 def _count_spans(pages: List[Dict[str, Any]]) -> int:
     return sum(1 for p in pages for e in p["elements"]
                if e["type"] == "text" and e.get("text", "").strip())

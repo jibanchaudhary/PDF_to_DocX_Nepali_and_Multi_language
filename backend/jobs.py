@@ -172,12 +172,20 @@ class JobRegistry:
         """
         if ttl <= 0:
             return 0
-        cutoff = time.time() - ttl
+        now = time.time()
+        soft = now - ttl          # finished jobs past here are evictable
+        hard = now - 2 * ttl      # even stuck/running jobs past here, to bound leaks
         with self._lock:
-            stale = [jid for jid, j in self._jobs.items() if j.created_at < cutoff]
+            stale = [
+                jid for jid, j in self._jobs.items()
+                if (j.created_at < soft and j.status in ("done", "error"))
+                or j.created_at < hard
+            ]
             for jid in stale:
                 self._jobs.pop(jid, None)
         for jid in stale:
+            # Never yank a young, still-writing job's directory: the soft path is
+            # gated on a terminal status and the hard path is well past any run.
             shutil.rmtree(os.path.join(STORAGE_ROOT, jid), ignore_errors=True)
         return len(stale)
 

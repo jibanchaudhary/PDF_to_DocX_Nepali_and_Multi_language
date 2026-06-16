@@ -1,3 +1,20 @@
+---
+title: PDFlow
+emoji: 📄
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
+<!--
+The YAML block above configures the Hugging Face Space (Docker SDK) and MUST be
+the first thing in this file. It is ignored when the README renders on GitHub.
+See DEPLOY.md for the full deployment guide.
+-->
+
 # PDFlow — Nepali PDF → editable Word converter
 
 Traditional PDF→Word converters mangle Nepali documents: text encoded with

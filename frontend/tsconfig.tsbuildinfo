@@ -1,1 +1,28 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/components/DeviceBadge.tsx","./src/components/DualEngine.tsx","./src/components/Footer.tsx","./src/components/Hero.tsx","./src/components/HowItWorks.tsx","./src/components/Nav.tsx","./src/components/ProblemSection.tsx","./src/components/icons.tsx","./src/components/converter/CompareView.tsx","./src/components/converter/Converter.tsx","./src/components/converter/Details.tsx","./src/components/converter/PageCanvas.tsx","./src/components/converter/ProgressView.tsx","./src/components/converter/RecoveredText.tsx","./src/components/converter/Results.tsx","./src/components/converter/StructureView.tsx","./src/components/converter/Uploader.tsx","./src/components/converter/WordPreview.tsx","./src/components/ui/Reveal.tsx","./src/lib/api.ts","./src/lib/useConversion.ts"],"version":"5.9.3"}
+{
+    "root": [
+        "./src/App.tsx",
+        "./src/main.tsx",
+        "./src/components/DeviceBadge.tsx",
+        "./src/components/DualEngine.tsx",
+        "./src/components/Footer.tsx",
+        "./src/components/Hero.tsx",
+        "./src/components/HowItWorks.tsx",
+        "./src/components/Nav.tsx",
+        "./src/components/ProblemSection.tsx",
+        "./src/components/icons.tsx",
+        "./src/components/converter/CompareView.tsx",
+        "./src/components/converter/Converter.tsx",
+        "./src/components/converter/Details.tsx",
+        "./src/components/converter/PageCanvas.tsx",
+        "./src/components/converter/ProgressView.tsx",
+        "./src/components/converter/RecoveredText.tsx",
+        "./src/components/converter/Results.tsx",
+        "./src/components/converter/StructureView.tsx",
+        "./src/components/converter/Uploader.tsx",
+        "./src/components/converter/WordPreview.tsx",
+        "./src/components/ui/Reveal.tsx",
+        "./src/lib/api.ts",
+        "./src/lib/useConversion.ts"
+    ],
+    "version": "5.9.3"
+}

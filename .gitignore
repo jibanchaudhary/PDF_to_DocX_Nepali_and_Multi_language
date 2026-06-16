@@ -3,8 +3,14 @@
 __pycache__/
 
 *.Pdf
+*.pdf
 *.png
 *.docx
+
+*.json
+*.jpg
+*.png
+*.jpeg
 
 # Web app
 frontend/node_modules/

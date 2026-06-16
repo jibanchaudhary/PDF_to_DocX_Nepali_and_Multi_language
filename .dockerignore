@@ -1,0 +1,42 @@
+# Keep the Docker build context small and reproducible.
+
+# VCS / editor
+.git
+.gitignore
+.vscode
+.idea
+
+# Python venv & caches (the image installs its own deps)
+.pvenv
+../.pvenv
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Frontend: node_modules and dist are rebuilt inside the image
+frontend/node_modules
+frontend/dist
+
+# Runtime artifacts / job storage
+storage/jobs/*
+!storage/jobs/.gitkeep
+
+# Local model caches (re-downloaded / pre-baked in the image)
+.paddlex
+.paddleocr
+
+# Test fixtures, scratch files, generated outputs
+tests/*.pdf
+tests/*.docx
+tests/*.json
+tests/*.ipynb
+*.ipynb
+output.docx
+.~lock.*#
+
+# Docs / meta not needed at runtime
+DEPLOY.md
+LICENSE
